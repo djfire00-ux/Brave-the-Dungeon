@@ -2568,6 +2568,18 @@ Svc.soundPlay = function (s, resume) {
     if (s._synth) Svc.liveSounds.add(s);
     return;
   }
+  // your own music (sounds/<id>.mp3 next to the page): download the whole file once, then play it from memory.
+  // (Plain media streaming asks for byte ranges, which phones + the offline cache don't handle well.)
+  // If the file is missing, fall back to the built-in web soundtrack.
+  const mid = sm && sm[1];
+  if (mid && root.MUSIC_FILES && root.MUSIC_FILES[mid] && !(root.SOUND_URLS && root.SOUND_URLS[mid])) {
+    s._playing = true; s.p.Playing = true;
+    Svc.loadMusic(mid).then(ok => {
+      if (!ok) delete root.MUSIC_FILES[mid];
+      if (s._playing && !s.destroyed) Svc.soundPlay(s, resume);
+    });
+    return;
+  }
   const url = Svc.soundUrl(s.p.SoundId);
   s._playing = true; s.p.Playing = true;
   if (!url) { // no audio file: pretend to play for a moment
@@ -2591,9 +2603,28 @@ Svc.soundPlay = function (s, resume) {
   au.volume = Math.max(0, Math.min(1, s.p.Volume * Svc.masterVolume));
   au.playbackRate = s.p.PlaybackSpeed || 1;
   if (!resume) { try { au.currentTime = s.p.TimePosition || 0; } catch (e) {} }
-  const pr = au.play(); if (pr && pr.catch) pr.catch(() => {});
+  const pr = au.play(); if (pr && pr.catch) pr.catch((e) => { if (e && e.name === 'NotAllowedError') Svc.blockedSounds.add(s); });
   Svc.liveSounds.add(s);
 };
+Svc.musicLoads = {};
+Svc.loadMusic = function (id) {
+  if (!Svc.musicLoads[id]) {
+    Svc.musicLoads[id] = fetch('sounds/' + id + '.' + root.MUSIC_FILES[id]).then(r => (r && r.ok) ? r.blob() : null).then(b => {
+      if (!b || b.size < 1000) return false;
+      root.SOUND_URLS = root.SOUND_URLS || {};
+      root.SOUND_URLS[id] = URL.createObjectURL(b);
+      return true;
+    }).catch(() => false);
+  }
+  return Svc.musicLoads[id];
+};
+// phones block audio until you touch the screen: anything that was blocked starts on the next tap / key
+Svc.blockedSounds = new Set();
+if (typeof document !== 'undefined') for (const ev of ['pointerdown', 'touchend', 'keydown']) document.addEventListener(ev, () => {
+  if (!Svc.blockedSounds.size) return;
+  for (const s of Svc.blockedSounds) if (s._playing && s._audio && !s.destroyed) { const pr = s._audio.play(); if (pr && pr.catch) pr.catch(() => {}); }
+  Svc.blockedSounds.clear();
+}, true);
 Svc.liveSounds = new Set();
 Svc.soundStop = function (s) { if (s._synth) { s._synth.stop(); s._synth = null; } clearTimeout(s._fakeT); s._playing = false; s.p.Playing = false; s.p.TimePosition = 0; if (s._audio) { s._audio.pause(); try { s._audio.currentTime = 0; } catch (e) {} } Svc.liveSounds.delete(s); };
 Svc.soundPause = function (s) { if (s._synth) { s._synth.stop(); s._synth = null; } s._playing = false; s.p.Playing = false; if (s._audio) s._audio.pause(); };
