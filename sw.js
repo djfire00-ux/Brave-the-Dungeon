@@ -1,27 +1,20 @@
-// Keeps the game on the phone so it opens with no internet. Bump happens on every build.
-const CACHE = 'brave-dungeon-202610241503';
-const SOUNDS = 'brave-dungeon-sounds-v1'; // music: kept between updates (only downloaded once per track)
-const FILES = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
-self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting())); });
-self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE && k !== SOUNDS).map(k => caches.delete(k)))).then(() => self.clients.claim())); });
-// offline first: answer from the phone, and fetch a fresh copy in the background for next time
-self.addEventListener('fetch', e => {
-  if (e.request.method !== 'GET') return;
-  if (e.request.url.includes('/sounds/')) {
-    // music tracks: from the phone if we have them, otherwise download once and keep
-    e.respondWith(caches.open(SOUNDS).then(async c => {
-      const key = e.request.url.split('?')[0];
-      const hit = await c.match(key);
+// Brave the Dungeon offline copy: serve from the network when there is one, from the stored copy when there isn't.
+const CACHE = 'btd-offline-v1';
+self.addEventListener('install', (e) => { self.skipWaiting(); });
+self.addEventListener('activate', (e) => { e.waitUntil(self.clients.claim()); });
+self.addEventListener('fetch', (e) => {
+  const req = e.request;
+  if (req.method !== 'GET' || new URL(req.url).origin !== location.origin) return;
+  e.respondWith((async () => {
+    const cache = await caches.open(CACHE);
+    try {
+      const res = await fetch(req);
+      if (res && res.ok) cache.put(req, res.clone()).catch(() => {});
+      return res;
+    } catch (err) {
+      const hit = (await cache.match(req, { ignoreSearch: true })) || (req.mode === 'navigate' ? await cache.match(new URL('./', location.href).href) || await cache.match(new URL('index.html', location.href).href) : null);
       if (hit) return hit;
-      const r = await fetch(key); // the whole file (no byte ranges), so it can be kept
-      if (r && r.status === 200) { try { await c.put(key, r.clone()); } catch (err) {} }
-      return r;
-    }));
-    return;
-  }
-  e.respondWith(caches.open(CACHE).then(async c => {
-    const hit = await c.match(e.request, { ignoreSearch: true });
-    const net = fetch(e.request).then(r => { if (r && r.ok) c.put(e.request, r.clone()); return r; }).catch(() => null);
-    return hit || (await net) || c.match('./index.html');
-  }));
+      throw err;
+    }
+  })());
 });
